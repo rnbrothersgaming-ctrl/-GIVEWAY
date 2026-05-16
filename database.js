@@ -1,108 +1,131 @@
 const fs = require('fs');
 const path = require('path');
 
-const DB_FILE = path.join(__dirname, 'db.json');
+const DB_PATH = path.join(__dirname, 'db.json');
 
-// Initialize database with default structure if it doesn't exist
-if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify({ users: [], settings: { giveaway_status: 'active' } }, null, 2));
-} else {
-    // Ensure giveaway_status exists in existing DB
-    const db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-    if (!db.settings.giveaway_status) {
-        db.settings.giveaway_status = 'active';
-        fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
-    }
-}
-
-function readDB() {
-    return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-}
-
-function writeDB(data) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-}
-
-module.exports = {
-    getUser: (id) => {
-        const db = readDB();
-        return db.users.find(u => u.telegram_id === id);
+const database = {
+    data: {
+        polls: [],
+        activePollId: null
     },
-    createUser: (id, username, referredBy) => {
-        const db = readDB();
-        if (db.users.find(u => u.telegram_id === id)) return;
-        db.users.push({
-            telegram_id: id,
-            username: username,
-            referral_count: 0,
-            referred_by: referredBy,
-            is_participant: 0,
-            referral_claimed: 0
+
+    load() {
+        if (fs.existsSync(DB_PATH)) {
+            try {
+                const content = fs.readFileSync(DB_PATH, 'utf-8');
+                this.data = JSON.parse(content);
+            } catch (error) {
+                console.error('Error loading database:', error);
+            }
+        } else {
+            this.save();
+        }
+    },
+
+    save() {
+        fs.writeFileSync(DB_PATH, JSON.stringify(this.data, null, 2));
+    },
+
+    createPoll(title, options, winnerCount = 1) {
+        if (this.data.activePollId) return null; // Prevent creation if one is active
+
+        const poll = {
+            id: Date.now().toString(),
+            title: title,
+            options: options.map(opt => ({ name: opt.trim(), votes: [] })),
+            winnerCount: parseInt(winnerCount) || 1,
+            channelMsgId: null,
+            status: 'active'
+        };
+        this.data.polls.push(poll);
+        this.data.activePollId = poll.id;
+        this.save();
+        return poll;
+    },
+
+    getActivePoll() {
+        if (!this.data.activePollId) return null;
+        return this.getPoll(this.data.activePollId);
+    },
+
+    endPoll(pollId) {
+        const poll = this.getPoll(pollId);
+        if (!poll) return null;
+        poll.status = 'ended';
+        this.data.activePollId = null;
+        this.save();
+        return poll;
+    },
+
+    addParticipant(pollId, userId, name) {
+        const poll = this.getPoll(pollId);
+        if (!poll) return { success: false, message: 'Poll not found' };
+        if (poll.status !== 'active') return { success: false, message: 'Poll is not active' };
+
+        // Check if user is already a participant
+        const alreadyJoined = poll.options.some(opt => opt.userId === userId);
+        if (alreadyJoined) return { success: false, message: 'You have already joined!' };
+
+        poll.options.push({
+            name: name,
+            userId: userId,
+            votes: []
         });
-        writeDB(db);
+        
+        this.save();
+        return { success: true, poll };
     },
-    setParticipant: (id) => {
-        const db = readDB();
-        const user = db.users.find(u => u.telegram_id === id);
-        if (user) {
-            user.is_participant = 1;
-            writeDB(db);
+
+    addManualVotes(optionIndex, count) {
+        const poll = this.getActivePoll();
+        if (!poll) return { success: false, message: 'No active poll' };
+        if (!poll.options[optionIndex]) return { success: false, message: 'Invalid option index' };
+
+        for (let i = 0; i < count; i++) {
+            poll.options[optionIndex].votes.push(`manual_${Date.now()}_${i}`);
         }
+
+        this.save();
+        return { success: true, poll };
     },
-    claimReferral: (id) => {
-        const db = readDB();
-        const user = db.users.find(u => u.telegram_id === id);
-        // Remove is_participant check so it counts as soon as they join
-        if (user && !user.referral_claimed && user.referred_by) {
-            const referrer = db.users.find(u => u.telegram_id === user.referred_by);
-            if (referrer) {
-                referrer.referral_count += 1;
-                user.referral_claimed = 1;
-                writeDB(db);
-                return referrer;
+
+    getPoll(pollId) {
+        return this.data.polls.find(p => p.id === pollId);
+    },
+
+    vote(pollId, optionIndex, userId) {
+        const poll = this.getPoll(pollId);
+        if (!poll) return { success: false, message: 'Poll not found' };
+
+        // Check if user already voted in this poll
+        const alreadyVoted = poll.options.some(opt => opt.votes.includes(userId));
+        if (alreadyVoted) return { success: false, message: 'You have already voted!' };
+
+        poll.options[optionIndex].votes.push(userId);
+        this.save();
+        return { success: true, poll };
+    },
+
+    removeVote(userId) {
+        const poll = this.getActivePoll();
+        if (!poll) return null;
+
+        let removedOption = null;
+        poll.options.forEach(opt => {
+            const index = opt.votes.indexOf(userId);
+            if (index !== -1) {
+                opt.votes.splice(index, 1);
+                removedOption = opt.name;
             }
+        });
+
+        if (removedOption) {
+            this.save();
+            return { poll, removedOption };
         }
         return null;
-    },
-    removeReferral: (id) => {
-        const db = readDB();
-        const user = db.users.find(u => u.telegram_id === id);
-        if (user && user.referral_claimed && user.referred_by) {
-            const referrer = db.users.find(u => u.telegram_id === user.referred_by);
-            if (referrer) {
-                referrer.referral_count = Math.max(0, referrer.referral_count - 1);
-                user.referral_claimed = 0;
-                writeDB(db);
-                return referrer;
-            }
-        }
-        return null;
-    },
-    getTopReferrers: (limit = 10) => {
-        const db = readDB();
-        return [...db.users]
-            // Show anyone who has at least 1 referral OR is a participant
-            .filter(u => u.is_participant || u.referral_count > 0)
-            .sort((a, b) => b.referral_count - a.referral_count)
-            .slice(0, limit);
-    },
-    manualAddReferral: (id, amount) => {
-        const db = readDB();
-        const user = db.users.find(u => u.telegram_id === id);
-        if (user) {
-            user.referral_count += amount;
-            writeDB(db);
-            return user;
-        }
-        return null;
-    },
-    setSetting: (key, value) => {
-        const db = readDB();
-        db.settings[key] = value;
-        writeDB(db);
-    },
-    getSetting: (key) => {
-        const db = readDB();
-        return db.settings[key] || null;
     }
 };
+
+database.load();
+module.exports = database;

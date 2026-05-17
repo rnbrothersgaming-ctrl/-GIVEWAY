@@ -76,6 +76,29 @@ const database = {
         return { success: true, poll };
     },
 
+    removeOption(optionIndex) {
+        const poll = this.getActivePoll();
+        if (!poll) return { success: false, message: 'No active poll' };
+        if (optionIndex < 0 || optionIndex >= poll.options.length) return { success: false, message: 'Invalid option index' };
+
+        const removed = poll.options.splice(optionIndex, 1)[0];
+        this.save();
+        return { success: true, poll, removed };
+    },
+
+    addOptionAdmin(name) {
+        const poll = this.getActivePoll();
+        if (!poll) return { success: false, message: 'No active poll' };
+
+        const newOption = {
+            name: name.trim(),
+            votes: []
+        };
+        poll.options.push(newOption);
+        this.save();
+        return { success: true, poll, added: newOption };
+    },
+
     addManualVotes(optionIndex, count) {
         const poll = this.getActivePoll();
         if (!poll) return { success: false, message: 'No active poll' };

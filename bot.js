@@ -85,7 +85,68 @@ bot.hears('🛠 Help', (ctx) => {
         '1. Click **Create Poll** to start.\n' +
         '2. Click **Active Options** to see participant numbers.\n' +
         '3. Use `/addvote [Number] [Count]` to add votes manually.\n' +
-        '4. Click **End Poll** to stop voting and post results.', { parse_mode: 'Markdown' });
+        '4. Use `/add [Name]` to add a participant.\n' +
+        '5. Use `/remove [Number]` to remove a participant.\n' +
+        '6. Click **End Poll** to stop voting and post results.', { parse_mode: 'Markdown' });
+});
+
+bot.command('add', async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return ctx.reply('Only admins can use this command.');
+    const args = ctx.message.text.split(' ');
+    if (args.length < 2) {
+        return ctx.reply('Usage: `/add [Name]`\nExample: `/add Rifat`', { parse_mode: 'Markdown' });
+    }
+    const name = args.slice(1).join(' ');
+    
+    const result = database.addOptionAdmin(name);
+    if (!result.success) {
+        return ctx.reply(`Error: ${result.message}`);
+    }
+
+    ctx.reply(`✅ Successfully added participant: ${name}`);
+
+    const poll = result.poll;
+    if (poll.channelMsgId) {
+        const keyboard = generatePollKeyboard(poll);
+        const messageText = poll.title;
+        try {
+            await ctx.telegram.editMessageText(CHANNEL_ID, poll.channelMsgId, null, messageText, {
+                parse_mode: 'Markdown',
+                ...keyboard
+            });
+        } catch (e) {}
+    }
+});
+
+bot.command('remove', async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return ctx.reply('Only admins can use this command.');
+    const args = ctx.message.text.split(' ');
+    if (args.length < 2) {
+        return ctx.reply('Usage: `/remove [Number]`\nExample: `/remove 3`', { parse_mode: 'Markdown' });
+    }
+    const optionIndex = parseInt(args[1]) - 1;
+    if (isNaN(optionIndex)) {
+        return ctx.reply('Please provide a valid number.');
+    }
+
+    const result = database.removeOption(optionIndex);
+    if (!result.success) {
+        return ctx.reply(`Error: ${result.message}`);
+    }
+
+    ctx.reply(`✅ Successfully removed participant: ${result.removed.name}`);
+
+    const poll = result.poll;
+    if (poll.channelMsgId) {
+        const keyboard = generatePollKeyboard(poll);
+        const messageText = poll.title;
+        try {
+            await ctx.telegram.editMessageText(CHANNEL_ID, poll.channelMsgId, null, messageText, {
+                parse_mode: 'Markdown',
+                ...keyboard
+            });
+        } catch (e) {}
+    }
 });
 
 bot.command('addvote', async (ctx) => {

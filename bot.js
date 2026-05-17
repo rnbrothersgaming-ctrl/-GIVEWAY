@@ -13,6 +13,12 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
+// Helper to escape HTML characters
+const escapeHTML = (str) => {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+};
+
 // Simple state management
 const userStates = {};
 
@@ -33,7 +39,7 @@ async function handleOptions(ctx) {
     if (!activePoll) return ctx.reply('কোনো রানিং পোল নেই।');
     let text = `📊 <b>বর্তমান পোলের অপশন লিস্ট:</b>\n\n`;
     activePoll.options.forEach((opt, i) => {
-        text += `${i + 1}. <b>${opt.name}</b> (ভোট: ${opt.votes.length})\n`;
+        text += `${i + 1}. <b>${escapeHTML(opt.name)}</b> (ভোট: ${opt.votes.length})\n`;
     });
     text += `\n💡 ভোট যোগ করতে ব্যবহার করুন: <code>/addvote [নম্বর] [পরিমাণ]</code>`;
     ctx.reply(text, { parse_mode: 'HTML' });
@@ -206,7 +212,7 @@ function generatePollEndText(poll) {
         // Emoji: crown for top winners, user for others
         const isWinner = winners.some(w => w.name === opt.name && count > 0);
         const emoji = isWinner ? '👑' : '👤';
-        text += `${emoji} ${opt.name} ${bar} ${percent}% (${count} ভোট)\n`;
+        text += `${emoji} ${escapeHTML(opt.name)} ${bar} ${percent}% (${count} ভোট)\n`;
     });
 
     text += `\n🏆 <b>বিজয়ীদের দেখুন 👇 :</b>\n`;
@@ -216,7 +222,7 @@ function generatePollEndText(poll) {
         winners.forEach((w, i) => {
             const medal = medals[i] || medals[3];
             const rankText = i === 0 ? 'প্রথম বিজয়ী' : (i === 1 ? 'দ্বিতীয় বিজয়ী' : (i === 2 ? 'তৃতীয় বিজয়ী' : `${i+1}তম বিজয়ী`));
-            text += `${medal} <b>${rankText}:</b> ${w.name} (${w.votes.length} ভোট)\n`;
+            text += `${medal} <b>${rankText}:</b> ${escapeHTML(w.name)} (${w.votes.length} ভোট)\n`;
         });
     } else {
         text += `<i>কোনো ভোট পড়েনি।</i>\n`;
@@ -267,7 +273,12 @@ bot.on('text', async (ctx) => {
             [Markup.button.callback('❌ Cancel', 'cancel', false, { style: 'danger' })]
         ]);
 
-        ctx.reply(`**Poll Preview**:\n\n${state.title}\n\nWinners: ${state.winnerCount}\nOptions:\n${state.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}`, {
+        const escapeMd = (str) => {
+            if (!str) return '';
+            return str.replace(/[_*[\]`]/g, '\\$&');
+        };
+
+        ctx.reply(`**Poll Preview**:\n\n${state.title}\n\nWinners: ${state.winnerCount}\nOptions:\n${state.options.map((o, i) => `${i + 1}. ${escapeMd(o)}`).join('\n')}`, {
             parse_mode: 'Markdown',
             ...keyboard
         });
@@ -316,12 +327,6 @@ bot.action(/vote_(.+)_(.+)/, async (ctx) => {
     const poll = result.poll;
     const votedOption = poll.options[optionIndex].name;
     const voter = ctx.from;
-
-    // Helper to escape HTML characters
-    const escapeHTML = (str) => {
-        if (!str) return '';
-        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    };
 
     // 1. Notify Admin Immediately using HTML mode (much safer than Markdown)
     const adminMsg = `🗳 <b>পোলটি স্বয়ংক্রিয়ভাবে ট্র্যাক করা হচ্ছে।</b>\n\n` +

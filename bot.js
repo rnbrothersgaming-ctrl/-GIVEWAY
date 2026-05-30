@@ -19,6 +19,18 @@ const escapeHTML = (str) => {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 };
 
+// Helper to check if a user is subscribed to the channel
+async function isSubscribed(ctx, userId) {
+    try {
+        const chatMember = await ctx.telegram.getChatMember(CHANNEL_ID, userId);
+        const status = chatMember.status;
+        return status !== 'left' && status !== 'kicked';
+    } catch (error) {
+        console.error(`Error checking subscription status for user ${userId}:`, error);
+        return false;
+    }
+}
+
 // Simple state management
 const userStates = {};
 
@@ -286,83 +298,100 @@ bot.on('text', async (ctx) => {
 });
 
 bot.action(/post_(.+)/, async (ctx) => {
-    const pollId = ctx.match[1];
-    const poll = database.getPoll(pollId);
-    if (!poll) return ctx.answerCbQuery('Poll not found.');
-
-    const keyboard = generatePollKeyboard(poll);
-    
-    const messageText = poll.title;
-
     try {
-        const msg = await ctx.telegram.sendMessage(CHANNEL_ID, messageText, {
-            parse_mode: 'Markdown',
-            ...keyboard
-        });
-        
-        poll.channelMsgId = msg.message_id;
-        database.save();
+        const pollId = ctx.match[1];
+        const poll = database.getPoll(pollId);
+        if (!poll) return await ctx.answerCbQuery('Poll not found.').catch(() => {});
 
-        ctx.editMessageText('✅ Poll posted to channel successfully!');
-        delete userStates[ctx.from.id];
+        const keyboard = generatePollKeyboard(poll);
+        const messageText = poll.title;
+
+        try {
+            const msg = await ctx.telegram.sendMessage(CHANNEL_ID, messageText, {
+                parse_mode: 'Markdown',
+                ...keyboard
+            });
+            
+            poll.channelMsgId = msg.message_id;
+            database.save();
+
+            await ctx.editMessageText('✅ Poll posted to channel successfully!').catch(() => {});
+            delete userStates[ctx.from.id];
+        } catch (error) {
+            console.error('Error posting to channel:', error);
+            ctx.reply('Error posting to channel. Make sure the bot is an admin in the channel.');
+        }
     } catch (error) {
-        console.error('Error posting to channel:', error);
-        ctx.reply('Error posting to channel. Make sure the bot is an admin in the channel.');
+        console.error('Error in post handler:', error);
     }
 });
 
 bot.action(/vote_(.+)_(.+)/, async (ctx) => {
-    const pollId = ctx.match[1];
-    const optionIndex = parseInt(ctx.match[2]);
-    const userId = ctx.from.id;
-
-    const result = database.vote(pollId, optionIndex, userId);
-    
-    if (!result.success) {
-        return ctx.answerCbQuery(result.message, { show_alert: true });
-    }
-
-    ctx.answerCbQuery('Vote registered!');
-    
-    const poll = result.poll;
-    const votedOption = poll.options[optionIndex].name;
-    const voter = ctx.from;
-
-    // 1. Notify Admin Immediately using HTML mode (much safer than Markdown)
-    const adminMsg = `🗳 <b>পোলটি স্বয়ংক্রিয়ভাবে ট্র্যাক করা হচ্ছে।</b>\n\n` +
-        `👷 <b>ভোট দিয়েছেন:</b>\n` +
-        `────────────────────\n` +
-        `👤 <b>নাম:</b> ${escapeHTML(voter.first_name)}${voter.last_name ? ' ' + escapeHTML(voter.last_name) : ''}\n` +
-        `🔰 <b>ইউজারনেম:</b> ${voter.username ? '@' + escapeHTML(voter.username) : 'নেই'}\n` +
-        `🆔 <b>ইউজার আইডি:</b> <code>${voter.id}</code>\n` +
-        `📌 <b>ভোট দিয়েছে:</b> ${escapeHTML(votedOption)}\n` +
-        `────────────────────`;
-
     try {
-        await ctx.telegram.sendMessage(ADMIN_ID, adminMsg, { parse_mode: 'HTML' });
-    } catch (err) {
-        console.error('Failed to notify admin:', err.message);
-        // Fallback to plain text if HTML fails
-        await ctx.telegram.sendMessage(ADMIN_ID, `Vote Tracking Error: ${voter.id} voted for ${votedOption}`).catch(() => {});
-    }
+        const pollId = ctx.match[1];
+        const optionIndex = parseInt(ctx.match[2]);
+        const userId = ctx.from.id;
 
-    // 2. Update the Channel Poll UI
-    const keyboard = generatePollKeyboard(poll);
-    const messageText = poll.title;
-    
-    try {
-        await ctx.editMessageText(messageText, {
-            parse_mode: 'Markdown',
-            ...keyboard
-        });
-    } catch (e) {
-        // Silently catch "Message is not modified"
+        // Check channel subscription
+        const subscribed = await isSubscribed(ctx, userId);
+        if (!subscribed) {
+            return await ctx.answerCbQuery('⚠️ ভোট দিতে হলে আপনাকে প্রথমে আমাদের চ্যানেলে জয়েন করতে হবে! অনুগ্রহ করে জয়েন করে আবার চেষ্টা করুন।', { show_alert: true }).catch(() => {});
+        }
+
+        const result = database.vote(pollId, optionIndex, userId);
+        
+        if (!result.success) {
+            return await ctx.answerCbQuery(result.message, { show_alert: true }).catch(() => {});
+        }
+
+        await ctx.answerCbQuery('Vote registered!').catch(() => {});
+        
+        const poll = result.poll;
+        const votedOption = poll.options[optionIndex].name;
+        const voter = ctx.from;
+
+        // 1. Notify Admin Immediately using HTML mode (much safer than Markdown)
+        const adminMsg = `🗳 <b>পোলটি স্বয়ংক্রিয়ভাবে ট্র্যাক করা হচ্ছে।</b>\n\n` +
+            `👷 <b>ভোট দিয়েছেন:</b>\n` +
+            `────────────────────\n` +
+            `👤 <b>নাম:</b> ${escapeHTML(voter.first_name)}${voter.last_name ? ' ' + escapeHTML(voter.last_name) : ''}\n` +
+            `🔰 <b>ইউজারনেম:</b> ${voter.username ? '@' + escapeHTML(voter.username) : 'নেই'}\n` +
+            `🆔 <b>ইউজার আইডি:</b> <code>${voter.id}</code>\n` +
+            `📌 <b>ভোট দিয়েছে:</b> ${escapeHTML(votedOption)}\n` +
+            `────────────────────`;
+
+        try {
+            await ctx.telegram.sendMessage(ADMIN_ID, adminMsg, { parse_mode: 'HTML' });
+        } catch (err) {
+            console.error('Failed to notify admin:', err.message);
+            // Fallback to plain text if HTML fails
+            await ctx.telegram.sendMessage(ADMIN_ID, `Vote Tracking Error: ${voter.id} voted for ${votedOption}`).catch(() => {});
+        }
+
+        // 2. Update the Channel Poll UI
+        const keyboard = generatePollKeyboard(poll);
+        const messageText = poll.title;
+        
+        try {
+            await ctx.editMessageText(messageText, {
+                parse_mode: 'Markdown',
+                ...keyboard
+            });
+        } catch (e) {
+            // Silently catch "Message is not modified"
+        }
+    } catch (error) {
+        console.error('Error in vote handler:', error);
     }
 });
 
-bot.action('cancel', (ctx) => {
-    delete userStates[ctx.from.id];
-    ctx.editMessageText('Poll creation cancelled.');
+bot.action('cancel', async (ctx) => {
+    try {
+        delete userStates[ctx.from.id];
+        await ctx.editMessageText('Poll creation cancelled.').catch(() => {});
+    } catch (error) {
+        console.error('Error in cancel handler:', error);
+    }
 });
 
 // Handle users leaving the channel (Fake Vote Protection)
@@ -412,30 +441,40 @@ bot.on('chat_member', async (ctx) => {
 });
 
 bot.action(/join_(.+)/, async (ctx) => {
-    const pollId = ctx.match[1];
-    const user = ctx.from;
-    const name = `${user.first_name}${user.last_name ? ' ' + user.last_name : ''}`;
-
-    const result = database.addParticipant(pollId, user.id, name);
-
-    if (!result.success) {
-        return ctx.answerCbQuery(result.message, { show_alert: true });
-    }
-
-    ctx.answerCbQuery('You have joined the vote! 🚀');
-
-    // Update the message UI
-    const poll = result.poll;
-    const keyboard = generatePollKeyboard(poll);
-    const messageText = poll.title;
-
     try {
-        await ctx.editMessageText(messageText, {
-            parse_mode: 'Markdown',
-            ...keyboard
-        });
-    } catch (e) {
-        // Silently catch
+        const pollId = ctx.match[1];
+        const user = ctx.from;
+        const name = `${user.first_name}${user.last_name ? ' ' + user.last_name : ''}`;
+
+        // Check channel subscription
+        const subscribed = await isSubscribed(ctx, user.id);
+        if (!subscribed) {
+            return await ctx.answerCbQuery('⚠️ পোলে অংশগ্রহণ করতে হলে আপনাকে প্রথমে আমাদের চ্যানেলে জয়েন করতে হবে!', { show_alert: true }).catch(() => {});
+        }
+
+        const result = database.addParticipant(pollId, user.id, name);
+
+        if (!result.success) {
+            return await ctx.answerCbQuery(result.message, { show_alert: true }).catch(() => {});
+        }
+
+        await ctx.answerCbQuery('You have joined the vote! 🚀').catch(() => {});
+
+        // Update the message UI
+        const poll = result.poll;
+        const keyboard = generatePollKeyboard(poll);
+        const messageText = poll.title;
+
+        try {
+            await ctx.editMessageText(messageText, {
+                parse_mode: 'Markdown',
+                ...keyboard
+            });
+        } catch (e) {
+            // Silently catch
+        }
+    } catch (error) {
+        console.error('Error in join handler:', error);
     }
 });
 
@@ -480,6 +519,11 @@ function generatePollKeyboard(poll) {
 
     return Markup.inlineKeyboard(buttons);
 }
+
+// Global error handler to prevent crashes from Telegram API errors
+bot.catch((err, ctx) => {
+    console.error(`Telegraf global error caught for update ${ctx?.update?.update_id}:`, err);
+});
 
 bot.launch({
     allowedUpdates: ['message', 'callback_query', 'chat_member']
